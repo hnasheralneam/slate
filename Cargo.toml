@@ -1,0 +1,24 @@
+[package]
+name = "noted"
+version = "0.1.0"
+edition = "2021"
+description = "A TUI markdown note editor — Obsidian replacement"
+
+[[bin]]
+name = "noted"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+walkdir = "2"
+open = "5"
+anyhow = "1"
+syntect = "5"
+unicode-width = "0.1"
+unicode-segmentation = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
