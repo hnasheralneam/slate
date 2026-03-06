@@ -3,9 +3,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
-    pub line: usize,
-    pub col_start: usize,
-    pub col_end: usize,
+    pub start_char: usize,
+    pub end_char: usize,
 }
 
 pub struct SearchState {
@@ -19,26 +18,29 @@ impl SearchState {
         Self { query: String::new(), matches: Vec::new(), current: 0 }
     }
 
-    pub fn recompute_matches(&mut self, content: &[String]) {
+    pub fn recompute_matches(&mut self, content: &str) {
         self.matches.clear();
         self.current = 0;
         if self.query.is_empty() {
             return;
         }
         let q = self.query.to_lowercase();
-        for (line_idx, line) in content.iter().enumerate() {
-            let lower = line.to_lowercase();
-            let mut start = 0;
-            while let Some(pos) = lower[start..].find(&q) {
-                let col_start = start + pos;
-                let col_end = col_start + q.len();
-                self.matches.push(SearchMatch { line: line_idx, col_start, col_end });
-                start = col_end;
-            }
+        let lower = content.to_lowercase();
+        
+        let mut byte_idx = 0;
+        while let Some(pos) = lower[byte_idx..].find(&q) {
+            let start_byte = byte_idx + pos;
+            let end_byte = start_byte + q.len();
+            
+            let start_char = content[..start_byte].chars().count();
+            let end_char = start_char + content[start_byte..end_byte].chars().count();
+            
+            self.matches.push(SearchMatch { start_char, end_char });
+            byte_idx = end_byte;
         }
     }
 
-    pub fn next_match(&mut self, content: &[String]) {
+    pub fn next_match(&mut self, content: &str) {
         if self.matches.is_empty() {
             self.recompute_matches(content);
         }
@@ -47,7 +49,7 @@ impl SearchState {
         }
     }
 
-    pub fn prev_match(&mut self, content: &[String]) {
+    pub fn prev_match(&mut self, content: &str) {
         if self.matches.is_empty() {
             self.recompute_matches(content);
         }
@@ -58,18 +60,6 @@ impl SearchState {
                 self.current -= 1;
             }
         }
-    }
-
-    pub fn current_match_line(&self) -> Option<usize> {
-        self.matches.get(self.current).map(|m| m.line)
-    }
-
-    pub fn matches_on_line(&self, line: usize) -> Vec<(usize, usize)> {
-        self.matches
-            .iter()
-            .filter(|m| m.line == line)
-            .map(|m| (m.col_start, m.col_end))
-            .collect()
     }
 
     pub fn current_match(&self) -> Option<&SearchMatch> {

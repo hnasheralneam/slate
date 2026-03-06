@@ -1,6 +1,5 @@
 mod app;
 mod ui;
-mod highlight;
 mod filetree;
 mod search;
 

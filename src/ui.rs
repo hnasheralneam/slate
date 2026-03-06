@@ -1,5 +1,4 @@
 use crate::app::{App, Mode, Pane};
-use crate::highlight::{apply_search_highlight, highlight_markdown_line};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -176,16 +175,17 @@ fn file_icon(path: &PathBuf) -> &'static str {
 
 // ── Editor ────────────────────────────────────────────────────────────────────
 
-fn draw_editor(f: &mut Frame, app: &App, area: Rect) {
+fn draw_editor(f: &mut Frame, app: &mut App, area: Rect) {
     let is_insert = app.mode == Mode::Insert;
-    let tab = app.tab();
-
-    let title = match &tab.path {
-        None => " [ new tab ] ".to_string(),
-        Some(p) => {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let dirty = if tab.dirty { " [+]" } else { "" };
-            format!(" {}{} ", name, dirty)
+    let title = {
+        let tab = app.tab();
+        match &tab.path {
+            None => " [ new tab ] ".to_string(),
+            Some(p) => {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                let dirty = if tab.dirty { " [+]" } else { "" };
+                format!(" {}{} ", name, dirty)
+            }
         }
     };
 
@@ -202,12 +202,14 @@ fn draw_editor(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
+    app.editor_area = inner;
     f.render_widget(block, area);
 
-    if tab.content.is_empty() {
+    let tab = app.tab();
+    if tab.editor.get_content().is_empty() {
         let help = Paragraph::new(Text::from(vec![
             Line::from(""),
-            Line::from(Span::styled("  noted", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled("  Slate", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))),
             Line::from(""),
             Line::from(vec![Span::styled("  Ctrl+T  ", Style::default().fg(Color::Yellow)), Span::raw("New tab")]),
             Line::from(vec![Span::styled("  Ctrl+W  ", Style::default().fg(Color::Yellow)), Span::raw("Close tab")]),
@@ -218,7 +220,7 @@ fn draw_editor(f: &mut Frame, app: &App, area: Rect) {
             Line::from(vec![Span::styled("  Ctrl+B  ", Style::default().fg(Color::Yellow)), Span::raw("Toggle sidebar")]),
             Line::from(vec![Span::styled("  Ctrl+G  ", Style::default().fg(Color::Yellow)), Span::raw("Grep all files")]),
             Line::from(vec![Span::styled("  Ctrl+F  ", Style::default().fg(Color::Yellow)), Span::raw("Search in file")]),
-            Line::from(vec![Span::styled("  e / i   ", Style::default().fg(Color::Yellow)), Span::raw("Edit file")]),
+            Line::from(vec![Span::styled("  e / i / Enter ", Style::default().fg(Color::Yellow)), Span::raw("Edit file")]),
             Line::from(vec![Span::styled("  Ctrl+S  ", Style::default().fg(Color::Yellow)), Span::raw("Save")]),
             Line::from(vec![Span::styled("  Ctrl+Q  ", Style::default().fg(Color::Yellow)), Span::raw("Quit")]),
         ]));
@@ -226,74 +228,13 @@ fn draw_editor(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut in_code_block = false;
-    let cursor_line = tab.cursor_line;
-    let cursor_col  = tab.cursor_col;
-
-    let lines: Vec<Line> = tab.content
-        .iter()
-        .enumerate()
-        .skip(tab.scroll_offset)
-        .take(inner.height as usize)
-        .map(|(line_idx, raw_line)| {
-            if raw_line.starts_with("```") {
-                in_code_block = !in_code_block;
-            }
-
-            let styled_spans = if in_code_block && !raw_line.starts_with("```") {
-                vec![crate::highlight::StyledSpan {
-                    text: raw_line.clone(),
-                    style: Style::default().fg(Color::Rgb(220, 220, 170)),
-                }]
-            } else {
-                highlight_markdown_line(raw_line)
-            };
-
-            let search_matches = tab.in_file_search.matches_on_line(line_idx);
-            let is_cur_match   = tab.in_file_search.current_match().map(|m| m.line == line_idx).unwrap_or(false);
-
-            let final_spans = if !search_matches.is_empty() {
-                apply_search_highlight(&styled_spans, &search_matches, is_cur_match)
-            } else {
-                styled_spans
-            };
-
-            let gutter_style = if line_idx == cursor_line {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::Rgb(70, 70, 70))
-            };
-            let gutter = Span::styled(format!("{:4} ", line_idx + 1), gutter_style);
-
-            let mut spans: Vec<Span> = vec![gutter];
-
-            if is_insert && line_idx == cursor_line {
-                let chars: Vec<char> = raw_line.chars().collect();
-                let col = cursor_col.min(chars.len());
-                let before: String = chars[..col].iter().collect();
-                let cur_ch = if col < chars.len() { chars[col].to_string() } else { " ".to_string() };
-                let after: String  = if col < chars.len() { chars[col+1..].iter().collect() } else { String::new() };
-
-                for s in highlight_markdown_line(&before) {
-                    spans.push(Span::styled(s.text, s.style));
-                }
-                spans.push(Span::styled(cur_ch, Style::default().bg(Color::White).fg(Color::Black)));
-                if !after.is_empty() {
-                    for s in highlight_markdown_line(&after) {
-                        spans.push(Span::styled(s.text, s.style));
-                    }
-                }
-            } else {
-                for s in final_spans {
-                    spans.push(Span::styled(s.text, s.style));
-                }
-            }
-
-            Line::from(spans)
-        })
-        .collect();
-
-    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+    f.render_widget(&tab.editor, inner);
+    
+    if is_insert {
+        if let Some((x, y)) = tab.editor.get_visible_cursor(&inner) {
+            f.set_cursor_position(ratatui::layout::Position::new(x, y));
+        }
+    }
 }
 
 // ── Status bar ────────────────────────────────────────────────────────────────
@@ -324,8 +265,9 @@ fn draw_statusbar(f: &mut Frame, app: &App, area: Rect) {
         app.tabs.len()
     );
 
-    let pos_info = if !tab.content.is_empty() {
-        format!("{}:{}", tab.cursor_line + 1, tab.cursor_col + 1)
+    let pos_info = if !tab.editor.get_content().is_empty() {
+        let (row, col) = tab.editor.code_ref().point(tab.editor.get_cursor());
+        format!("{}:{}", row + 1, col + 1)
     } else {
         String::new()
     };

@@ -1,8 +1,11 @@
 use crate::filetree::FileTree;
 use crate::search::{SearchState, GlobalSearch};
 use anyhow::{Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use std::path::PathBuf;
+use ratatui_code_editor::editor::Editor;
+use ratatui_code_editor::theme::vesper;
+use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -24,10 +27,7 @@ pub enum Pane {
 
 pub struct Tab {
     pub path: Option<PathBuf>,
-    pub content: Vec<String>,
-    pub cursor_line: usize,
-    pub cursor_col: usize,
-    pub scroll_offset: usize,
+    pub editor: Editor,
     pub dirty: bool,
     pub in_file_search: SearchState,
 }
@@ -36,10 +36,7 @@ impl Tab {
     pub fn empty() -> Self {
         Self {
             path: None,
-            content: Vec::new(),
-            cursor_line: 0,
-            cursor_col: 0,
-            scroll_offset: 0,
+            editor: Editor::new("md", "", vesper()).unwrap(),
             dirty: false,
             in_file_search: SearchState::new(),
         }
@@ -62,16 +59,27 @@ impl Tab {
     pub fn load(path: PathBuf) -> Result<Self> {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("Could not read {}", path.display()))?;
-        let mut content: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-        if content.is_empty() {
-            content.push(String::new());
-        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("txt");
+        let lang = match ext {
+            "rs" => "rust",
+            "md" => "markdown",
+            "js" => "javascript",
+            "ts" => "typescript",
+            "py" => "python",
+            "yaml" | "yml" => "yaml",
+            "toml" => "toml",
+            "json" => "json",
+            "html" => "html",
+            "css" => "css",
+            "sh" => "bash",
+            _ => "text",
+        };
+
+        let editor = Editor::new(lang, &text, vesper()).unwrap_or_else(|_| Editor::new("text", &text, vesper()).unwrap());
         Ok(Self {
             path: Some(path),
-            content,
-            cursor_line: 0,
-            cursor_col: 0,
-            scroll_offset: 0,
+            editor,
             dirty: false,
             in_file_search: SearchState::new(),
         })
@@ -79,22 +87,23 @@ impl Tab {
 
     pub fn save(&mut self) -> Result<()> {
         if let Some(ref path) = self.path {
-            std::fs::write(path, self.content.join("\n"))
+            std::fs::write(path, self.editor.get_content())
                 .with_context(|| format!("Could not save {}", path.display()))?;
             self.dirty = false;
         }
         Ok(())
     }
 
-    pub fn current_line_len(&self) -> usize {
-        self.content.get(self.cursor_line).map(|l| l.chars().count()).unwrap_or(0)
-    }
-
-    pub fn scroll_to_cursor(&mut self, viewport_height: usize) {
-        if self.cursor_line < self.scroll_offset {
-            self.scroll_offset = self.cursor_line;
-        } else if self.cursor_line >= self.scroll_offset + viewport_height {
-            self.scroll_offset = self.cursor_line.saturating_sub(viewport_height / 2);
+    pub fn update_search_marks(&mut self) {
+        if self.in_file_search.matches.is_empty() {
+            self.editor.remove_marks();
+        } else {
+            let mut marks = Vec::new();
+            for (i, m) in self.in_file_search.matches.iter().enumerate() {
+                let color = if i == self.in_file_search.current { "#00ff00" } else { "#ffff00" };
+                marks.push((m.start_char, m.end_char, color));
+            }
+            self.editor.set_marks(marks);
         }
     }
 }
@@ -142,6 +151,7 @@ pub struct App {
 
     // Shared editor state
     pub viewport_height: usize,
+    pub editor_area: Rect,
 
     // Dialogs
     pub file_open: FileOpenState,
@@ -166,9 +176,10 @@ impl App {
             sidebar_visible: true,
             file_tree,
             viewport_height: 20,
+            editor_area: Rect::default(),
             file_open: FileOpenState::new(),
             global_search: GlobalSearch::new(),
-            status_msg: String::from("noted — Ctrl+T new tab  Ctrl+W close  Alt+←/→ switch"),
+            status_msg: String::from("Slate — Ctrl+T new tab  Ctrl+W close  Alt+←/→ switch"),
         })
     }
 
@@ -187,7 +198,7 @@ impl App {
         if self.tabs.len() == 1 {
             // Last tab: just blank it out instead of closing
             self.tabs[0] = Tab::empty();
-            self.status_msg = "noted — Ctrl+P to open a file".to_string();
+            self.status_msg = "Slate — Ctrl+P to open a file".to_string();
             return;
         }
         self.tabs.remove(self.active_tab);
@@ -249,7 +260,7 @@ impl App {
 
         // If current tab is blank/empty, reuse it; otherwise open in new tab
         let reuse = self.tabs[self.active_tab].path.is_none()
-            && self.tabs[self.active_tab].content.is_empty();
+            && self.tabs[self.active_tab].editor.get_content().is_empty();
 
         let new_tab = Tab::load(path.clone())?;
         if reuse {
@@ -274,12 +285,26 @@ impl App {
     // ── key dispatch ─────────────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
+        let area = self.editor_area;
         match &self.mode {
-            Mode::Insert        => return self.handle_key_insert(key),
             Mode::InFileSearch  => return self.handle_key_in_file_search(key),
             Mode::FileOpen      => return self.handle_key_file_open(key),
             Mode::GlobalSearch  => return self.handle_key_global_search(key),
             Mode::SidePanel     => return self.handle_key_sidebar(key),
+            Mode::Insert => {
+                if key.code == KeyCode::Esc {
+                    self.mode = Mode::Normal;
+                    self.update_status();
+                    return Ok(false);
+                }
+                if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('s') {
+                    self.save_file()?;
+                    return Ok(false);
+                }
+                self.tab_mut().editor.input(key, &area)?;
+                self.tab_mut().dirty = true;
+                return Ok(false);
+            }
             Mode::Normal        => {}
         }
 
@@ -315,8 +340,9 @@ impl App {
 
             // Edit
             (KeyModifiers::NONE, KeyCode::Char('e')) |
-            (KeyModifiers::NONE, KeyCode::Char('i')) => {
-                if self.tab().path.is_some() {
+            (KeyModifiers::NONE, KeyCode::Char('i')) |
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if self.tab().path.is_some() || true {
                     self.mode = Mode::Insert;
                     self.status_msg = "-- INSERT -- Esc=normal  Ctrl+S=save".to_string();
                 }
@@ -329,6 +355,7 @@ impl App {
             (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
                 self.mode = Mode::InFileSearch;
                 self.tab_mut().in_file_search = SearchState::new();
+                self.tab_mut().editor.remove_marks();
             }
             (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
                 self.mode = Mode::FileOpen;
@@ -342,177 +369,61 @@ impl App {
                 self.global_search = GlobalSearch::new();
             }
 
-            // Scroll / movement
+            // Scroll / movement bindings in normal mode (pass through to editor)
             (KeyModifiers::NONE, KeyCode::Down) |
-            (KeyModifiers::NONE, KeyCode::Char('j')) => { self.scroll_down(1); }
+            (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &area);
+            }
             (KeyModifiers::NONE, KeyCode::Up) |
-            (KeyModifiers::NONE, KeyCode::Char('k')) => { self.scroll_up(1); }
+            (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &area);
+            }
+            (KeyModifiers::NONE, KeyCode::Left) |
+            (KeyModifiers::NONE, KeyCode::Char('h')) => {
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &area);
+            }
+            (KeyModifiers::NONE, KeyCode::Right) |
+            (KeyModifiers::NONE, KeyCode::Char('l')) => {
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &area);
+            }
             (KeyModifiers::NONE, KeyCode::PageDown) => {
-                self.scroll_down(self.viewport_height.saturating_sub(2));
+                let area_height = self.editor_area.height as usize;
+                self.tab_mut().editor.scroll_down(area_height);
             }
             (KeyModifiers::NONE, KeyCode::PageUp) => {
-                self.scroll_up(self.viewport_height.saturating_sub(2));
+                self.tab_mut().editor.scroll_up();
             }
             (KeyModifiers::NONE, KeyCode::Home) |
-            (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                let tab = self.tab_mut();
-                tab.scroll_offset = 0;
-                tab.cursor_line = 0;
+            (KeyModifiers::NONE, KeyCode::Char('0')) => {
+                // To start of line could be implemented by fetching line bounds, but we can leave this stubbed or implement via editor.input
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &area);
             }
-            (KeyModifiers::NONE, KeyCode::End) => {
-                let len = self.tab().content.len().saturating_sub(1);
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                tab.cursor_line = len;
-                tab.scroll_to_cursor(vh);
+            (KeyModifiers::NONE, KeyCode::End) |
+            (KeyModifiers::SHIFT, KeyCode::Char('$')) => {
+                let _ = self.tab_mut().editor.input(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &area);
             }
             (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-                let len = self.tab().content.len().saturating_sub(1);
-                let vh = self.viewport_height;
                 let tab = self.tab_mut();
-                tab.cursor_line = len;
-                tab.scroll_to_cursor(vh);
+                let len = tab.editor.get_content().chars().count();
+                tab.editor.set_cursor(len);
             }
             (KeyModifiers::NONE, KeyCode::Char('n')) => {
-                let vh = self.viewport_height;
                 let tab = self.tab_mut();
-                tab.in_file_search.next_match(&tab.content);
-                if let Some(line) = tab.in_file_search.current_match_line() {
-                    tab.cursor_line = line;
-                    tab.scroll_to_cursor(vh);
+                let content = tab.editor.get_content();
+                tab.in_file_search.next_match(&content);
+                if let Some(m) = tab.in_file_search.current_match() {
+                    tab.editor.set_cursor(m.start_char);
                 }
+                tab.update_search_marks();
             }
             (KeyModifiers::SHIFT, KeyCode::Char('N')) => {
-                let vh = self.viewport_height;
                 let tab = self.tab_mut();
-                tab.in_file_search.prev_match(&tab.content);
-                if let Some(line) = tab.in_file_search.current_match_line() {
-                    tab.cursor_line = line;
-                    tab.scroll_to_cursor(vh);
+                let content = tab.editor.get_content();
+                tab.in_file_search.prev_match(&content);
+                if let Some(m) = tab.in_file_search.current_match() {
+                    tab.editor.set_cursor(m.start_char);
                 }
-            }
-
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    fn handle_key_insert(&mut self, key: KeyEvent) -> Result<bool> {
-        match (key.modifiers, key.code) {
-            (KeyModifiers::NONE, KeyCode::Esc) => {
-                self.mode = Mode::Normal;
-                self.update_status();
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('s')) => { self.save_file()?; }
-
-            (KeyModifiers::NONE, KeyCode::Enter) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                let col = tab.cursor_col.min(tab.current_line_len());
-                let rest = tab.content[tab.cursor_line][char_to_byte(&tab.content[tab.cursor_line], col)..].to_string();
-                let line = tab.cursor_line;
-                let truncate_at = char_to_byte(&tab.content[line], col);
-                tab.content[line].truncate(truncate_at);
-                tab.cursor_line += 1;
-                tab.content.insert(tab.cursor_line, rest);
-                tab.cursor_col = 0;
-                tab.dirty = true;
-                tab.scroll_to_cursor(vh);
-            }
-            (KeyModifiers::NONE, KeyCode::Backspace) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                if tab.cursor_col > 0 {
-                    let col = tab.cursor_col.min(tab.current_line_len());
-                    let prev = char_to_byte(&tab.content[tab.cursor_line], col - 1);
-                    let cur  = char_to_byte(&tab.content[tab.cursor_line], col);
-                    tab.content[tab.cursor_line].drain(prev..cur);
-                    tab.cursor_col -= 1;
-                    tab.dirty = true;
-                } else if tab.cursor_line > 0 {
-                    let cur_line = tab.content.remove(tab.cursor_line);
-                    tab.cursor_line -= 1;
-                    let prev_len = tab.content[tab.cursor_line].chars().count();
-                    tab.content[tab.cursor_line].push_str(&cur_line);
-                    tab.cursor_col = prev_len;
-                    tab.dirty = true;
-                    tab.scroll_to_cursor(vh);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Delete) => {
-                let tab = self.tab_mut();
-                let col = tab.cursor_col.min(tab.current_line_len());
-                let line_len = tab.current_line_len();
-                if col < line_len {
-                    let b0 = char_to_byte(&tab.content[tab.cursor_line], col);
-                    let b1 = char_to_byte(&tab.content[tab.cursor_line], col + 1);
-                    tab.content[tab.cursor_line].drain(b0..b1);
-                    tab.dirty = true;
-                } else if tab.cursor_line + 1 < tab.content.len() {
-                    let next = tab.content.remove(tab.cursor_line + 1);
-                    tab.content[tab.cursor_line].push_str(&next);
-                    tab.dirty = true;
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Tab) => {
-                let tab = self.tab_mut();
-                let col = tab.cursor_col.min(tab.current_line_len());
-                let bp = char_to_byte(&tab.content[tab.cursor_line], col);
-                tab.content[tab.cursor_line].insert_str(bp, "  ");
-                tab.cursor_col += 2;
-                tab.dirty = true;
-            }
-            (KeyModifiers::NONE, KeyCode::Left) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                if tab.cursor_col > 0 { tab.cursor_col -= 1; }
-                else if tab.cursor_line > 0 {
-                    tab.cursor_line -= 1;
-                    tab.cursor_col = tab.current_line_len();
-                    tab.scroll_to_cursor(vh);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Right) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                let ll = tab.current_line_len();
-                if tab.cursor_col < ll { tab.cursor_col += 1; }
-                else if tab.cursor_line + 1 < tab.content.len() {
-                    tab.cursor_line += 1;
-                    tab.cursor_col = 0;
-                    tab.scroll_to_cursor(vh);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Up) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                if tab.cursor_line > 0 {
-                    tab.cursor_line -= 1;
-                    tab.cursor_col = tab.cursor_col.min(tab.current_line_len());
-                    tab.scroll_to_cursor(vh);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Down) => {
-                let vh = self.viewport_height;
-                let tab = self.tab_mut();
-                if tab.cursor_line + 1 < tab.content.len() {
-                    tab.cursor_line += 1;
-                    tab.cursor_col = tab.cursor_col.min(tab.current_line_len());
-                    tab.scroll_to_cursor(vh);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Home) => { self.tab_mut().cursor_col = 0; }
-            (KeyModifiers::NONE, KeyCode::End) => {
-                let ll = self.tab().current_line_len();
-                self.tab_mut().cursor_col = ll;
-            }
-            (mods, KeyCode::Char(c)) if mods == KeyModifiers::NONE || mods == KeyModifiers::SHIFT => {
-                let tab = self.tab_mut();
-                let col = tab.cursor_col.min(tab.current_line_len());
-                let bp = char_to_byte(&tab.content[tab.cursor_line], col);
-                tab.content[tab.cursor_line].insert(bp, c);
-                tab.cursor_col += 1;
-                tab.dirty = true;
+                tab.update_search_marks();
             }
             _ => {}
         }
@@ -561,33 +472,36 @@ impl App {
 
     fn handle_key_in_file_search(&mut self, key: KeyEvent) -> Result<bool> {
         match (key.modifiers, key.code) {
-            (KeyModifiers::NONE, KeyCode::Esc) => { self.mode = Mode::Normal; }
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                self.mode = Mode::Normal;
+                self.tab_mut().editor.remove_marks();
+            }
             (KeyModifiers::NONE, KeyCode::Enter) => {
-                let vh = self.viewport_height;
                 let tab = self.tab_mut();
-                tab.in_file_search.next_match(&tab.content);
-                if let Some(line) = tab.in_file_search.current_match_line() {
-                    tab.cursor_line = line;
-                    tab.scroll_to_cursor(vh);
+                let content = tab.editor.get_content();
+                tab.in_file_search.next_match(&content);
+                if let Some(m) = tab.in_file_search.current_match() {
+                    tab.editor.set_cursor(m.start_char);
                 }
+                tab.update_search_marks();
                 self.mode = Mode::Normal;
             }
             (KeyModifiers::NONE, KeyCode::Backspace) => {
                 let tab = self.tab_mut();
                 tab.in_file_search.query.pop();
-                let content = tab.content.clone();
+                let content = tab.editor.get_content();
                 tab.in_file_search.recompute_matches(&content);
+                tab.update_search_marks();
             }
             (KeyModifiers::NONE, KeyCode::Char(c)) => {
-                let vh = self.viewport_height;
                 let tab = self.tab_mut();
                 tab.in_file_search.query.push(c);
-                let content = tab.content.clone();
+                let content = tab.editor.get_content();
                 tab.in_file_search.recompute_matches(&content);
-                if let Some(line) = tab.in_file_search.current_match_line() {
-                    tab.cursor_line = line;
-                    tab.scroll_to_cursor(vh);
+                if let Some(m) = tab.in_file_search.current_match() {
+                    tab.editor.set_cursor(m.start_char);
                 }
+                tab.update_search_marks();
             }
             _ => {}
         }
@@ -634,10 +548,20 @@ impl App {
                     let path = path.clone();
                     let line_no = line_no;
                     self.open_file(path)?;
-                    let vh = self.viewport_height;
+
                     let tab = self.tab_mut();
-                    tab.cursor_line = line_no;
-                    tab.scroll_to_cursor(vh);
+                    let content = tab.editor.get_content();
+
+                    // Simple heuristic: count chars to line
+                    let mut char_count = 0;
+                    for (i, line) in content.lines().enumerate() {
+                        if i == line_no {
+                            break;
+                        }
+                        char_count += line.chars().count() + 1; // +1 for newline
+                    }
+                    tab.editor.set_cursor(char_count);
+
                     self.mode = Mode::Normal;
                 }
             }
@@ -659,35 +583,11 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
-        match mouse.kind {
-            MouseEventKind::ScrollDown => self.scroll_down(3),
-            MouseEventKind::ScrollUp   => self.scroll_up(3),
-            _ => {}
+        let area = self.editor_area;
+        if area.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+            let _ = self.tab_mut().editor.mouse(mouse, &area);
         }
     }
-
-    fn scroll_down(&mut self, n: usize) {
-        let tab = self.tab_mut();
-        let max = tab.content.len().saturating_sub(1);
-        tab.scroll_offset = (tab.scroll_offset + n).min(max);
-        if tab.cursor_line < tab.scroll_offset {
-            tab.cursor_line = tab.scroll_offset;
-        }
-    }
-
-    fn scroll_up(&mut self, n: usize) {
-        let vh = self.viewport_height;
-        let tab = self.tab_mut();
-        tab.scroll_offset = tab.scroll_offset.saturating_sub(n);
-        let bottom = tab.scroll_offset + vh.saturating_sub(1);
-        if tab.cursor_line > bottom {
-            tab.cursor_line = bottom.min(tab.content.len().saturating_sub(1));
-        }
-    }
-}
-
-pub fn char_to_byte(s: &str, char_idx: usize) -> usize {
-    s.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(s.len())
 }
 
 fn collect_all_files(root: &std::path::Path) -> Vec<PathBuf> {
