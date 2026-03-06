@@ -120,39 +120,53 @@ impl GlobalSearch {
         }
     }
 
+    /// Runs a global text search across the entire vault.
+    /// This method is called by `tick_debounce` after the user stops typing.
     pub fn run_search(&mut self, vault_path: &Path) {
         self.results.clear();
         self.selected = 0;
+        
+        // We require at least 2 characters to start searching 
+        // to avoid overwhelming the system.
         if self.query.len() < 2 {
             return;
         }
+        
         let q = self.query.to_lowercase();
 
-        for entry in walkdir::WalkDir::new(vault_path)
-            .follow_links(true)
-            .into_iter()
+        // `WalkBuilder` is imported from the `ignore` crate.
+        // It automatically handles `.gitignore` and ignores hidden files!
+        let walker = ignore::WalkBuilder::new(vault_path)
+            .build()
             .filter_map(|e| e.ok())
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
+            .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()));
+
+        for entry in walker {
             let ext = entry
                 .path()
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if !matches!(ext.as_str(), "md" | "txt" | "sh" | "") {
+                
+            // We only want to search within text-based files.
+            // Adjust this list to support more languages/extensions!
+            if !matches!(ext.as_str(), "md" | "txt" | "sh" | "rs" | "js" | "py" | "") {
                 continue;
             }
 
+            // Attempt to read the entire file into a string.
+            // If the file isn't valid UTF-8, this will fail and we just skip it.
             let text = match std::fs::read_to_string(entry.path()) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
 
+            // Process line by line and look for the search query.
             for (line_no, line) in text.lines().enumerate() {
                 let lower = line.to_lowercase();
+                
+                // If our lowercase query string is found inside the lowercase line...
                 if let Some(pos) = lower.find(&q) {
                     self.results.push(GlobalMatch {
                         path: entry.path().to_path_buf(),
@@ -161,6 +175,9 @@ impl GlobalSearch {
                         col_start: pos,
                         col_end: pos + q.len(),
                     });
+                    
+                    // Stop searching once we hit an arbitrary max limit (e.g. 200)
+                    // so the UI remains fast.
                     if self.results.len() >= 200 {
                         return;
                     }

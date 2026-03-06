@@ -2,6 +2,8 @@ mod app;
 mod ui;
 mod filetree;
 mod search;
+mod tabs;
+mod events;
 
 use anyhow::Result;
 use app::App;
@@ -63,12 +65,12 @@ fn run_app(
             loop {
                 match event::read()? {
                     Event::Key(key) => {
-                        if app.handle_key(key)? {
+                        if crate::events::handle_key(app, key)? {
                             should_quit = true;
                         }
                     }
                     Event::Mouse(mouse) => {
-                        app.handle_mouse(mouse);
+                        crate::events::handle_mouse(app, mouse);
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
