@@ -6,7 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -33,9 +34,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Length(1),  // status bar
         ])
         .split(h_chunks[1]);
-
-    // viewport_height = editor area minus borders
-    app.viewport_height = v_chunks[1].height.saturating_sub(2) as usize;
 
     if app.sidebar_visible {
         draw_sidebar(f, app, h_chunks[0]);
@@ -94,7 +92,7 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.active_pane == Pane::Sidebar;
     let border_style = if focused {
         Style::default().fg(Color::Blue)
@@ -107,6 +105,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(border_style);
     let inner = block.inner(area);
+    app.sidebar_area = inner;
     f.render_widget(block, area);
 
     let visible_height = inner.height as usize;
@@ -115,8 +114,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     } else {
         0
     };
+    app.sidebar_scroll_offset = scroll_offset;
 
     let active_path = app.tab().path.as_deref();
+    let open_paths: HashSet<&Path> = app.tabs.iter().filter_map(|t| t.path.as_deref()).collect();
 
     let items: Vec<ListItem> = app.file_tree.flat
         .iter()
@@ -132,8 +133,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             // Highlight if open in any tab
-            let open_in_tab = app.tabs.iter().any(|t| t.path.as_deref() == Some(&node.path));
-            let is_active_file = active_path == Some(&node.path);
+            let open_in_tab = open_paths.contains(node.path.as_path());
+            let is_active_file = active_path == Some(node.path.as_path());
 
             let style = if idx == app.file_tree.selected {
                 Style::default().bg(Color::Rgb(50, 80, 130)).fg(Color::White)
@@ -411,21 +412,30 @@ fn draw_global_search(f: &mut Frame, app: &App, area: Rect) {
             let is_sel = i == app.global_search.selected;
             let bg = if is_sel { Color::Rgb(30, 60, 100) } else { Color::Reset };
 
-            let lo = m.col_start.min(m.line_text.len());
-            let hi = m.col_end.min(m.line_text.len());
-            let before  = &m.line_text[..lo];
-            let matched = &m.line_text[lo..hi];
-            let after   = &m.line_text[hi..];
-            let bt = if before.len() > 20 { &before[before.len()-20..] } else { before };
-            let at = if after.len()  > 40 { &after[..40] } else { after };
+            let line_chars: Vec<char> = m.line_text.chars().collect();
+            let lo = m.col_start.min(line_chars.len());
+            let hi = m.col_end.min(line_chars.len());
+            let before: String = line_chars[..lo].iter().collect();
+            let matched: String = line_chars[lo..hi].iter().collect();
+            let after: String = line_chars[hi..].iter().collect();
+            let bt = if before.chars().count() > 20 {
+                before.chars().skip(before.chars().count() - 20).collect()
+            } else {
+                before.clone()
+            };
+            let at = if after.chars().count() > 40 {
+                after.chars().take(40).collect()
+            } else {
+                after
+            };
 
             ListItem::new(Line::from(vec![
                 Span::styled(format!("  {:20} {:4}  ", fname, m.line_no + 1),
                     Style::default().bg(bg).fg(Color::Yellow)),
-                Span::styled(bt.to_string(),      Style::default().bg(bg).fg(Color::White)),
-                Span::styled(matched.to_string(),
+                Span::styled(bt,      Style::default().bg(bg).fg(Color::White)),
+                Span::styled(matched,
                     Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)),
-                Span::styled(at.to_string(),      Style::default().bg(bg).fg(Color::White)),
+                Span::styled(at,      Style::default().bg(bg).fg(Color::White)),
             ]))
         }).collect();
 

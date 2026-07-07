@@ -25,6 +25,7 @@ pub enum Pane {
 
 pub struct FileOpenState {
     pub query: String,
+    pub vault_path: PathBuf,
     pub all_files: Vec<PathBuf>,
     pub results: Vec<PathBuf>,
     pub selected: usize,
@@ -32,7 +33,13 @@ pub struct FileOpenState {
 
 impl FileOpenState {
     pub fn new() -> Self {
-        Self { query: String::new(), all_files: Vec::new(), results: Vec::new(), selected: 0 }
+        Self {
+            query: String::new(),
+            vault_path: PathBuf::new(),
+            all_files: Vec::new(),
+            results: Vec::new(),
+            selected: 0,
+        }
     }
 
     pub fn filter(&mut self) {
@@ -41,8 +48,13 @@ impl FileOpenState {
             self.all_files.iter().take(50).cloned().collect()
         } else {
             self.all_files.iter()
-                .filter(|p| p.file_name().and_then(|n| n.to_str())
-                    .map(|n| n.to_lowercase().contains(&q)).unwrap_or(false))
+                .filter(|p| {
+                    let name_match = p.file_name().and_then(|n| n.to_str())
+                        .map(|n| n.to_lowercase().contains(&q)).unwrap_or(false);
+                    let rel = p.strip_prefix(&self.vault_path).unwrap_or(p);
+                    let path_match = rel.to_string_lossy().to_lowercase().contains(&q);
+                    name_match || path_match
+                })
                 .take(50).cloned().collect()
         };
         self.selected = 0;
@@ -63,8 +75,11 @@ pub struct App {
     pub file_tree: FileTree,
 
     // Shared editor state
-    pub viewport_height: usize,
     pub editor_area: Rect,
+
+    // Sidebar layout, captured during render for mouse-click mapping
+    pub sidebar_area: Rect,
+    pub sidebar_scroll_offset: usize,
 
     // Dialogs
     pub file_open: FileOpenState,
@@ -88,8 +103,9 @@ impl App {
             active_tab: 0,
             sidebar_visible: true,
             file_tree,
-            viewport_height: 20,
             editor_area: Rect::default(),
+            sidebar_area: Rect::default(),
+            sidebar_scroll_offset: 0,
             file_open: FileOpenState::new(),
             global_search: GlobalSearch::new(),
             status_msg: String::from("Slate — Ctrl+T new tab  Ctrl+W close  Alt+←/→ switch"),
@@ -108,6 +124,11 @@ impl App {
     }
 
     pub fn close_tab(&mut self) {
+        let tab = &self.tabs[self.active_tab];
+        if tab.dirty {
+            self.status_msg = "Cannot close: unsaved changes. Press Ctrl+S to save first.".to_string();
+            return;
+        }
         if self.tabs.len() == 1 {
             // Last tab: just blank it out instead of closing
             self.tabs[0] = Tab::empty();
@@ -187,6 +208,11 @@ impl App {
     }
 
     pub fn save_file(&mut self) -> Result<()> {
+        let tab = &self.tabs[self.active_tab];
+        if tab.path.is_none() {
+            self.status_msg = "Cannot save: no file set. Use Ctrl+P to open a file first.".to_string();
+            return Ok(());
+        }
         self.tabs[self.active_tab].save()?;
         self.update_status();
         let name = self.tabs[self.active_tab].path.as_ref()

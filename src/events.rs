@@ -1,7 +1,7 @@
 use crate::app::{App, Mode, Pane};
 use crate::search::SearchState;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Main keyboard event handler. Dispatches to the appropriate sub-handler based on current mode.
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -47,7 +47,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::ALT, KeyCode::Left) | (KeyModifiers::ALT, KeyCode::Char('h')) => app.prev_tab(),
 
         // Jump to specific tab using Alt+1..9
-        (KeyModifiers::ALT, KeyCode::Char(c)) if c.is_ascii_digit() => {
+        (KeyModifiers::ALT, KeyCode::Char(c)) if c.is_ascii_digit() && c != '0' => {
             let n = c as usize - '1' as usize;
             app.goto_tab(n);
         }
@@ -82,12 +82,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
             app.mode = Mode::FileOpen;
+            app.file_open.vault_path = app.vault_path.clone();
             app.file_open.all_files = crate::app::collect_all_files(&app.vault_path);
             app.file_open.filter();
         }
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
             app.mode = Mode::GlobalSearch;
-            app.global_search = crate::search::GlobalSearch::new();
+            app.global_search.query.clear();
+            app.global_search.results.clear();
+            app.global_search.selected = 0;
+            app.global_search.dirty = false;
+            app.global_search.last_typed = None;
         }
 
         // Scroll / movement bindings in normal mode (pass through to editor)
@@ -166,16 +171,7 @@ fn handle_key_sidebar(app: &mut App, key: KeyEvent) -> Result<bool> {
         (KeyModifiers::NONE, KeyCode::Enter)
         | (KeyModifiers::NONE, KeyCode::Char('l'))
         | (KeyModifiers::NONE, KeyCode::Right) => {
-            if let Some(path) = app.file_tree.selected_path() {
-                if path.is_dir() {
-                    app.file_tree.toggle_expand();
-                } else {
-                    let p = path.clone();
-                    app.open_file(p)?;
-                    app.mode = Mode::Normal;
-                    app.active_pane = Pane::Editor;
-                }
-            }
+            activate_sidebar_selection(app)?;
         }
         (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => {
             app.file_tree.collapse_or_parent();
@@ -186,6 +182,21 @@ fn handle_key_sidebar(app: &mut App, key: KeyEvent) -> Result<bool> {
         _ => {}
     }
     Ok(false)
+}
+
+/// Opens the file, or toggles the directory, currently selected in the sidebar.
+fn activate_sidebar_selection(app: &mut App) -> Result<()> {
+    if let Some(path) = app.file_tree.selected_path() {
+        if path.is_dir() {
+            app.file_tree.toggle_expand();
+        } else {
+            let p = path.clone();
+            app.open_file(p)?;
+            app.mode = Mode::Normal;
+            app.active_pane = Pane::Editor;
+        }
+    }
+    Ok(())
 }
 
 fn handle_key_in_file_search(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -262,24 +273,43 @@ fn handle_key_global_search(app: &mut App, key: KeyEvent) -> Result<bool> {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Esc) => {
             app.mode = Mode::Normal;
+            app.global_search.dirty = false;
+            app.global_search.last_typed = None;
         }
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some((path, line_no, _)) = app.global_search.selected_result() {
-                let path = path.clone();
-                let line_no = line_no;
+            if let Some(m) = app.global_search.results.get(app.global_search.selected) {
+                let path = m.path.clone();
+                let line_no = m.line_no;
+                let col_start = m.col_start;
                 app.open_file(path)?;
 
                 let tab = app.tab_mut();
                 let content = tab.editor.get_content();
 
-                // Simple heuristic: count chars to line
-                let mut char_count = 0;
-                for (i, line) in content.lines().enumerate() {
-                    if i == line_no {
-                        break;
+                // Find the char offset of the start of `line_no` by counting
+                // actual newline characters in the original content, then add
+                // the column offset within that line.
+                let mut line_start = 0;
+                let mut lines_seen = 0;
+                if line_no > 0 {
+                    let mut found = false;
+                    for (i, ch) in content.char_indices() {
+                        if ch == '\n' {
+                            lines_seen += 1;
+                            if lines_seen == line_no {
+                                line_start = i + 1;
+                                found = true;
+                                break;
+                            }
+                        }
                     }
-                    char_count += line.chars().count() + 1; // +1 for newline
+                    if !found {
+                        line_start = content.len();
+                    }
                 }
+                let line_start_chars = content[..line_start].chars().count();
+                let line_len = content[line_start..].lines().next().map(|l| l.chars().count()).unwrap_or(0);
+                let char_count = line_start_chars + col_start.min(line_len);
                 tab.editor.set_cursor(char_count);
 
                 app.mode = Mode::Normal;
@@ -304,9 +334,26 @@ fn handle_key_global_search(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
+    let pos = ratatui::layout::Position::new(mouse.column, mouse.row);
+
+    if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+        && app.sidebar_visible
+        && app.sidebar_area.contains(pos)
+    {
+        let row_idx = app.sidebar_scroll_offset + (mouse.row - app.sidebar_area.y) as usize;
+        if row_idx < app.file_tree.flat.len() {
+            app.file_tree.selected = row_idx;
+            app.mode = Mode::SidePanel;
+            app.active_pane = Pane::Sidebar;
+            activate_sidebar_selection(app)?;
+        }
+        return Ok(());
+    }
+
     let area = app.editor_area;
-    if area.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+    if area.contains(pos) {
         let _ = app.tab_mut().editor.mouse(mouse, &area);
     }
+    Ok(())
 }

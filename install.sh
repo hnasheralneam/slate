@@ -8,4 +8,4 @@ INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "$INSTALL_DIR"
 cp target/release/slate "$INSTALL_DIR/slate"
 
-echo "Installed to $INSTALL_DIR/slate\n"
+echo "Installed to $INSTALL_DIR/slate"

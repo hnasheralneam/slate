@@ -20,10 +20,11 @@ pub struct Tab {
 impl Tab {
     /// Creates a new, empty tab named "[ new ]".
     pub fn empty() -> Self {
+        let editor = Editor::new("markdown", "", vesper())
+            .unwrap_or_else(|_| Editor::new("text", "", vesper()).unwrap());
         Self {
             path: None,
-            // Default to markdown syntax highlighting for new files
-            editor: Editor::new("md", "", vesper()).unwrap(),
+            editor,
             dirty: false,
             in_file_search: SearchState::new(),
         }

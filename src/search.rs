@@ -1,6 +1,26 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Finds all non-overlapping occurrences of `needle` in `haystack`, returning
+/// (start, end) char-index pairs.
+fn find_char_matches(haystack: &[char], needle: &[char]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let qlen = needle.len();
+    if qlen == 0 || haystack.len() < qlen {
+        return out;
+    }
+    let mut i = 0;
+    while i <= haystack.len() - qlen {
+        if &haystack[i..i + qlen] == needle {
+            out.push((i, i + qlen));
+            i += qlen;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
     pub start_char: usize,
@@ -24,19 +44,13 @@ impl SearchState {
         if self.query.is_empty() {
             return;
         }
-        let q = self.query.to_lowercase();
-        let lower = content.to_lowercase();
-        
-        let mut byte_idx = 0;
-        while let Some(pos) = lower[byte_idx..].find(&q) {
-            let start_byte = byte_idx + pos;
-            let end_byte = start_byte + q.len();
-            
-            let start_char = content[..start_byte].chars().count();
-            let end_char = start_char + content[start_byte..end_byte].chars().count();
-            
+
+        let content_chars: Vec<char> = content.chars().collect();
+        let q_lower: Vec<char> = self.query.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+        let content_lower: Vec<char> = content_chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+
+        for (start_char, end_char) in find_char_matches(&content_lower, &q_lower) {
             self.matches.push(SearchMatch { start_char, end_char });
-            byte_idx = end_byte;
         }
     }
 
@@ -125,14 +139,13 @@ impl GlobalSearch {
     pub fn run_search(&mut self, vault_path: &Path) {
         self.results.clear();
         self.selected = 0;
-        
-        // We require at least 2 characters to start searching 
-        // to avoid overwhelming the system.
-        if self.query.len() < 2 {
+
+        // Require at least 2 characters (char count, not byte count) to start searching.
+        if self.query.chars().count() < 2 {
             return;
         }
-        
-        let q = self.query.to_lowercase();
+
+        let q_chars: Vec<char> = self.query.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
 
         // `WalkBuilder` is imported from the `ignore` crate.
         // It automatically handles `.gitignore` and ignores hidden files!
@@ -142,13 +155,17 @@ impl GlobalSearch {
             .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()));
 
         for entry in walker {
+            if self.results.len() >= 200 {
+                return;
+            }
+
             let ext = entry
                 .path()
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-                
+
             // We only want to search within text-based files.
             // Adjust this list to support more languages/extensions!
             if !matches!(ext.as_str(), "md" | "txt" | "sh" | "rs" | "js" | "py" | "") {
@@ -162,22 +179,20 @@ impl GlobalSearch {
                 Err(_) => continue,
             };
 
-            // Process line by line and look for the search query.
+            // Process line by line and look for all occurrences of the search query.
             for (line_no, line) in text.lines().enumerate() {
-                let lower = line.to_lowercase();
-                
-                // If our lowercase query string is found inside the lowercase line...
-                if let Some(pos) = lower.find(&q) {
+                let line_chars: Vec<char> = line.chars().collect();
+                let line_lower: Vec<char> = line_chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+
+                for (col_start, col_end) in find_char_matches(&line_lower, &q_chars) {
                     self.results.push(GlobalMatch {
                         path: entry.path().to_path_buf(),
                         line_no,
                         line_text: line.to_string(),
-                        col_start: pos,
-                        col_end: pos + q.len(),
+                        col_start,
+                        col_end,
                     });
-                    
-                    // Stop searching once we hit an arbitrary max limit (e.g. 200)
-                    // so the UI remains fast.
+
                     if self.results.len() >= 200 {
                         return;
                     }
@@ -196,9 +211,4 @@ impl GlobalSearch {
         self.selected = self.selected.saturating_sub(1);
     }
 
-    pub fn selected_result(&self) -> Option<(&PathBuf, usize, &str)> {
-        self.results
-            .get(self.selected)
-            .map(|m| (&m.path, m.line_no, m.line_text.as_str()))
-    }
 }

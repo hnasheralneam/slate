@@ -50,8 +50,7 @@ fn run_app(
 
     loop {
         // Tick debouncer for global search
-        let vault = app.vault_path.clone();
-        let search_fired = app.global_search.tick_debounce(&vault);
+        let search_fired = app.global_search.tick_debounce(&app.vault_path);
 
         let timeout = if app.global_search.dirty {
             Duration::from_millis(16)
@@ -70,7 +69,7 @@ fn run_app(
                         }
                     }
                     Event::Mouse(mouse) => {
-                        crate::events::handle_mouse(app, mouse);
+                        crate::events::handle_mouse(app, mouse)?;
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
