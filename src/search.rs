@@ -21,6 +21,10 @@ fn find_char_matches(haystack: &[char], needle: &[char]) -> Vec<(usize, usize)> 
     out
 }
 
+fn lowercase_to_chars(s: &str) -> Vec<char> {
+    s.chars().flat_map(|c| c.to_lowercase()).collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
     pub start_char: usize,
@@ -45,9 +49,8 @@ impl SearchState {
             return;
         }
 
-        let content_chars: Vec<char> = content.chars().collect();
-        let q_lower: Vec<char> = self.query.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
-        let content_lower: Vec<char> = content_chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+        let q_lower = lowercase_to_chars(&self.query);
+        let content_lower = lowercase_to_chars(content);
 
         for (start_char, end_char) in find_char_matches(&content_lower, &q_lower) {
             self.matches.push(SearchMatch { start_char, end_char });
@@ -145,7 +148,7 @@ impl GlobalSearch {
             return;
         }
 
-        let q_chars: Vec<char> = self.query.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+        let q_chars = lowercase_to_chars(&self.query);
 
         // `WalkBuilder` is imported from the `ignore` crate.
         // It automatically handles `.gitignore` and ignores hidden files!
@@ -181,8 +184,7 @@ impl GlobalSearch {
 
             // Process line by line and look for all occurrences of the search query.
             for (line_no, line) in text.lines().enumerate() {
-                let line_chars: Vec<char> = line.chars().collect();
-                let line_lower: Vec<char> = line_chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+                let line_lower = lowercase_to_chars(line);
 
                 for (col_start, col_end) in find_char_matches(&line_lower, &q_chars) {
                     self.results.push(GlobalMatch {

@@ -21,7 +21,7 @@ impl Tab {
     /// Creates a new, empty tab named "[ new ]".
     pub fn empty() -> Self {
         let editor = Editor::new("markdown", "", vesper())
-            .unwrap_or_else(|_| Editor::new("text", "", vesper()).unwrap());
+            .unwrap_or_else(|_| Editor::new("text", "", vesper()).expect("Failed to create text editor"));
         Self {
             path: None,
             editor,

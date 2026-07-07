@@ -143,11 +143,13 @@ impl App {
     }
 
     pub fn next_tab(&mut self) {
+        self.tabs[self.active_tab].editor.remove_marks();
         self.active_tab = (self.active_tab + 1) % self.tabs.len();
         self.update_status();
     }
 
     pub fn prev_tab(&mut self) {
+        self.tabs[self.active_tab].editor.remove_marks();
         if self.active_tab == 0 {
             self.active_tab = self.tabs.len() - 1;
         } else {
@@ -158,6 +160,7 @@ impl App {
 
     pub fn goto_tab(&mut self, n: usize) {
         if n < self.tabs.len() {
+            self.tabs[self.active_tab].editor.remove_marks();
             self.active_tab = n;
             self.update_status();
         }
@@ -187,6 +190,7 @@ impl App {
 
         // If already open in a tab, switch to it
         if let Some(idx) = self.tabs.iter().position(|t| t.path.as_deref() == Some(&path)) {
+            self.tabs[self.active_tab].editor.remove_marks();
             self.active_tab = idx;
             self.update_status();
             return Ok(());
@@ -198,6 +202,7 @@ impl App {
 
         let new_tab = Tab::load(path.clone())?;
         if reuse {
+            self.tabs[self.active_tab].editor.remove_marks();
             self.tabs[self.active_tab] = new_tab;
         } else {
             self.tabs.insert(self.active_tab + 1, new_tab);

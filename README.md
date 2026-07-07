@@ -55,7 +55,7 @@ slate ~/Documents/obsidian-vault
 
 ## Tips
 
-- Run `late ~/your-notes-folder` to point it at any directory.
+- Run `slate ~/your-notes-folder` to point it at any directory.
 - The sidebar works just like VS Code's file explorer — expand folders with `Enter` or `Space`, collapse with `h`.
 - Global search (`Ctrl+G`) searches all `.md`, `.txt`, and `.sh` files in the vault. Matches show filename + line number + context with the match highlighted.
 - After closing the in-file search bar with `Enter`, use `n`/`N` to jump between matches.
