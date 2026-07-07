@@ -29,6 +29,7 @@ pub struct FileOpenState {
     pub all_files: Vec<PathBuf>,
     pub results: Vec<PathBuf>,
     pub selected: usize,
+    pub results_area: Rect,
 }
 
 impl FileOpenState {
@@ -39,7 +40,18 @@ impl FileOpenState {
             all_files: Vec::new(),
             results: Vec::new(),
             selected: 0,
+            results_area: Rect::default(),
         }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.results.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
     }
 
     pub fn filter(&mut self) {
@@ -77,6 +89,10 @@ pub struct App {
     // Shared editor state
     pub editor_area: Rect,
 
+    // Tab bar layout, captured during render for mouse-click mapping
+    pub tab_bar_area: Rect,
+    pub tab_rects: Vec<Rect>,
+
     // Sidebar layout, captured during render for mouse-click mapping
     pub sidebar_area: Rect,
     pub sidebar_scroll_offset: usize,
@@ -104,6 +120,8 @@ impl App {
             sidebar_visible: true,
             file_tree,
             editor_area: Rect::default(),
+            tab_bar_area: Rect::default(),
+            tab_rects: Vec::new(),
             sidebar_area: Rect::default(),
             sidebar_scroll_offset: 0,
             file_open: FileOpenState::new(),
@@ -123,23 +141,32 @@ impl App {
         self.status_msg = "New tab — Ctrl+P to open a file".to_string();
     }
 
-    pub fn close_tab(&mut self) {
-        let tab = &self.tabs[self.active_tab];
-        if tab.dirty {
+    pub fn close_tab_at(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        if self.tabs[idx].dirty {
             self.status_msg = "Cannot close: unsaved changes. Press Ctrl+S to save first.".to_string();
             return;
         }
         if self.tabs.len() == 1 {
-            // Last tab: just blank it out instead of closing
             self.tabs[0] = Tab::empty();
             self.status_msg = "Slate — Ctrl+P to open a file".to_string();
             return;
         }
-        self.tabs.remove(self.active_tab);
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
+        self.tabs.remove(idx);
+        if idx < self.active_tab {
+            self.active_tab -= 1;
+        } else if idx == self.active_tab {
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            }
         }
         self.update_status();
+    }
+
+    pub fn close_tab(&mut self) {
+        self.close_tab_at(self.active_tab);
     }
 
     pub fn next_tab(&mut self) {

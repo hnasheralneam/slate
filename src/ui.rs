@@ -53,12 +53,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 
-fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tab_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
+    let mut tab_rects = Vec::new();
+    let mut x = area.x;
 
     for (i, tab) in app.tabs.iter().enumerate() {
         let is_active = i == app.active_tab;
         let title = tab.title();
+        let label_width = 2 + title.chars().count();
+
+        tab_rects.push(Rect {
+            x,
+            y: area.y,
+            width: label_width as u16,
+            height: 1,
+        });
 
         if is_active {
             spans.push(Span::styled(
@@ -76,6 +86,8 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         // Separator
         spans.push(Span::styled("│", Style::default().fg(Color::Rgb(50, 50, 50))));
+
+        x += (label_width + 1) as u16;
     }
 
     // Fill rest of bar
@@ -83,6 +95,9 @@ fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect) {
         " ".repeat(area.width as usize),
         Style::default().bg(Color::Rgb(20, 20, 20)),
     ));
+
+    app.tab_rects = tab_rects;
+    app.tab_bar_area = area;
 
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(20, 20, 20))),
@@ -317,7 +332,7 @@ fn draw_search_bar(f: &mut Frame, app: &App, area: Rect) {
     ])), inner);
 }
 
-fn draw_file_open(f: &mut Frame, app: &App, area: Rect) {
+fn draw_file_open(f: &mut Frame, app: &mut App, area: Rect) {
     let w = (area.width as f32 * 0.6) as u16;
     let h = 20u16.min(area.height.saturating_sub(4));
     let modal = centered(area, w, h);
@@ -333,6 +348,8 @@ fn draw_file_open(f: &mut Frame, app: &App, area: Rect) {
     let input_area = Rect { height: 1, ..inner };
     let sep_area   = Rect { y: inner.y + 1, height: 1, ..inner };
     let list_area  = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2), ..inner };
+
+    app.file_open.results_area = list_area;
 
     f.render_widget(Paragraph::new(Line::from(vec![
         Span::styled("› ", Style::default().fg(Color::Magenta)),
@@ -361,7 +378,7 @@ fn draw_file_open(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(items), list_area);
 }
 
-fn draw_global_search(f: &mut Frame, app: &App, area: Rect) {
+fn draw_global_search(f: &mut Frame, app: &mut App, area: Rect) {
     let w = (area.width as f32 * 0.8) as u16;
     let h = (area.height as f32 * 0.7) as u16;
     let modal = centered(area, w, h);
@@ -377,6 +394,8 @@ fn draw_global_search(f: &mut Frame, app: &App, area: Rect) {
     let input_area = Rect { height: 1, ..inner };
     let sep_area   = Rect { y: inner.y + 1, height: 1, ..inner };
     let list_area  = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2), ..inner };
+
+    app.global_search.results_area = list_area;
 
     let count_str = if app.global_search.results.len() >= 200 {
         "200+".to_string()

@@ -243,18 +243,13 @@ fn handle_key_file_open(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.mode = Mode::Normal;
         }
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some(path) = app.file_open.results.get(app.file_open.selected).cloned() {
-                app.open_file(path)?;
-            }
-            app.mode = Mode::Normal;
+            open_selected_file_open_result(app)?;
         }
         (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
-            if app.file_open.selected + 1 < app.file_open.results.len() {
-                app.file_open.selected += 1;
-            }
+            app.file_open.move_down();
         }
         (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-            app.file_open.selected = app.file_open.selected.saturating_sub(1);
+            app.file_open.move_up();
         }
         (KeyModifiers::NONE, KeyCode::Backspace) => {
             app.file_open.query.pop();
@@ -277,43 +272,7 @@ fn handle_key_global_search(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.global_search.last_typed = None;
         }
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some(m) = app.global_search.results.get(app.global_search.selected) {
-                let path = m.path.clone();
-                let line_no = m.line_no;
-                let col_start = m.col_start;
-                app.open_file(path)?;
-
-                let tab = app.tab_mut();
-                let content = tab.editor.get_content();
-
-                // Find the char offset of the start of `line_no` by counting
-                // actual newline characters in the original content, then add
-                // the column offset within that line.
-                let mut line_start = 0;
-                let mut lines_seen = 0;
-                if line_no > 0 {
-                    let mut found = false;
-                    for (i, ch) in content.char_indices() {
-                        if ch == '\n' {
-                            lines_seen += 1;
-                            if lines_seen == line_no {
-                                line_start = i + 1;
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !found {
-                        line_start = content.len();
-                    }
-                }
-                let line_start_chars = content[..line_start].chars().count();
-                let line_len = content[line_start..].lines().next().map(|l| l.chars().count()).unwrap_or(0);
-                let char_count = line_start_chars + col_start.min(line_len);
-                tab.editor.set_cursor(char_count);
-
-                app.mode = Mode::Normal;
-            }
+            open_selected_global_search_result(app)?;
         }
         (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
             app.global_search.move_down();
@@ -334,25 +293,148 @@ fn handle_key_global_search(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
+fn open_selected_file_open_result(app: &mut App) -> Result<()> {
+    if let Some(path) = app.file_open.results.get(app.file_open.selected).cloned() {
+        app.open_file(path)?;
+    }
+    app.mode = Mode::Normal;
+    Ok(())
+}
+
+fn open_selected_global_search_result(app: &mut App) -> Result<()> {
+    if let Some(m) = app.global_search.results.get(app.global_search.selected) {
+        let path = m.path.clone();
+        let line_no = m.line_no;
+        let col_start = m.col_start;
+        app.open_file(path)?;
+
+        let tab = app.tab_mut();
+        let content = tab.editor.get_content();
+
+        // Find the char offset of the start of `line_no` by counting
+        // actual newline characters in the original content, then add
+        // the column offset within that line.
+        let mut line_start = 0;
+        let mut lines_seen = 0;
+        if line_no > 0 {
+            let mut found = false;
+            for (i, ch) in content.char_indices() {
+                if ch == '\n' {
+                    lines_seen += 1;
+                    if lines_seen == line_no {
+                        line_start = i + 1;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                line_start = content.len();
+            }
+        }
+        let line_start_chars = content[..line_start].chars().count();
+        let line_len = content[line_start..].lines().next().map(|l| l.chars().count()).unwrap_or(0);
+        let char_count = line_start_chars + col_start.min(line_len);
+        tab.editor.set_cursor(char_count);
+
+        app.mode = Mode::Normal;
+    }
+    Ok(())
+}
+
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     let pos = ratatui::layout::Position::new(mouse.column, mouse.row);
 
-    if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-        && app.sidebar_visible
-        && app.sidebar_area.contains(pos)
-    {
-        let row_idx = app.sidebar_scroll_offset + (mouse.row - app.sidebar_area.y) as usize;
-        if row_idx < app.file_tree.flat.len() {
-            app.file_tree.selected = row_idx;
-            app.mode = Mode::SidePanel;
-            app.active_pane = Pane::Sidebar;
-            activate_sidebar_selection(app)?;
+    // ---- 1. Popup overlays take priority when active ----
+    match &app.mode {
+        Mode::FileOpen => {
+            if app.file_open.results_area.contains(pos) {
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let row = (mouse.row - app.file_open.results_area.y) as usize;
+                        if row < app.file_open.results.len() {
+                            app.file_open.selected = row;
+                            open_selected_file_open_result(app)?;
+                        }
+                    }
+                    MouseEventKind::ScrollUp => app.file_open.move_up(),
+                    MouseEventKind::ScrollDown => app.file_open.move_down(),
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
+        Mode::GlobalSearch => {
+            if app.global_search.results_area.contains(pos) {
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let visible = app.global_search.results_area.height as usize;
+                        let scroll = if app.global_search.selected >= visible {
+                            app.global_search.selected - visible + 1
+                        } else { 0 };
+                        let row = scroll + (mouse.row - app.global_search.results_area.y) as usize;
+                        if row < app.global_search.results.len() {
+                            app.global_search.selected = row;
+                            open_selected_global_search_result(app)?;
+                        }
+                    }
+                    MouseEventKind::ScrollUp => app.global_search.move_up(),
+                    MouseEventKind::ScrollDown => app.global_search.move_down(),
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // ---- 2. Tab bar clicks ----
+    if let Some(idx) = app.tab_rects.iter().position(|r| r.contains(pos)) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                app.goto_tab(idx);
+            }
+            MouseEventKind::Down(MouseButton::Middle) => {
+                app.close_tab_at(idx);
+            }
+            _ => {}
         }
         return Ok(());
     }
 
+    // ---- 3. Sidebar (existing left-click logic + new wheel support) ----
+    if app.sidebar_visible && app.sidebar_area.contains(pos) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let row_idx = app.sidebar_scroll_offset + (mouse.row - app.sidebar_area.y) as usize;
+                if row_idx < app.file_tree.flat.len() {
+                    app.file_tree.selected = row_idx;
+                    app.mode = Mode::SidePanel;
+                    app.active_pane = Pane::Sidebar;
+                    activate_sidebar_selection(app)?;
+                }
+                return Ok(());
+            }
+            MouseEventKind::ScrollUp => {
+                app.file_tree.move_up();
+                return Ok(());
+            }
+            MouseEventKind::ScrollDown => {
+                app.file_tree.move_down();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    // ---- 4. Editor area: mode switch on Down(Left), then always forward ----
     let area = app.editor_area;
     if area.contains(pos) {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) && app.mode != Mode::Insert {
+            app.mode = Mode::Insert;
+            app.active_pane = Pane::Editor;
+            app.status_msg = "-- INSERT -- Esc=normal  Ctrl+S=save".to_string();
+        }
         let _ = app.tab_mut().editor.mouse(mouse, &area);
     }
     Ok(())

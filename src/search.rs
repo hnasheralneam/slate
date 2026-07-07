@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ratatui::layout::Rect;
 
 /// Finds all non-overlapping occurrences of `needle` in `haystack`, returning
 /// (start, end) char-index pairs.
@@ -100,6 +101,7 @@ pub struct GlobalSearch {
     pub selected: usize,
     pub dirty: bool,
     pub last_typed: Option<Instant>,
+    pub results_area: Rect,
 }
 
 impl GlobalSearch {
@@ -110,6 +112,7 @@ impl GlobalSearch {
             selected: 0,
             dirty: false,
             last_typed: None,
+            results_area: Rect::default(),
         }
     }
 
